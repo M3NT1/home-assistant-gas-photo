@@ -1,0 +1,45 @@
+import_readings:
+  name: Import reviewed gas readings
+  description: Admin-only durable exact readings; response acknowledges ledger acceptance, statistics are queued.
+  fields:
+    readings:
+      required: true
+      selector:
+        object:
+get_readings:
+  name: Read exact gas readings
+  description: Returns exact records, up to 500 per page; start inclusive and end exclusive.
+  fields:
+    ids:
+      selector:
+        object:
+    offset:
+      selector:
+        number:
+          min: 0
+          max: 1000000
+          mode: box
+    limit:
+      selector:
+        number:
+          min: 1
+          max: 500
+          mode: box
+    start:
+      selector:
+        text:
+    end:
+      selector:
+        text:
+get_statistics:
+  name: Read back Recorder gas statistics
+  description: Read actual Recorder rows and expected ledger rows for a range up to 31 days. Queued imports may not yet appear.
+  fields:
+    start:
+      required: true
+      selector:
+        text:
+    end:
+      required: true
+      selector:
+        text:
