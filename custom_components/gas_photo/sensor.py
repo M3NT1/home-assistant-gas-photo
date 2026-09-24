@@ -6,7 +6,11 @@ from . import DOMAIN
 
 async def async_setup_platform(hass,config,async_add_entities,discovery_info=None):
     if discovery_info is not None:
-        async_add_entities([GasPhotoSensor(hass,False),GasPhotoSensor(hass,True)])
+        async_add_entities([
+            GasPhotoSensor(hass,False),
+            GasPhotoSensor(hass,True),
+            GasPhotoPublicationStatusSensor(hass),
+        ])
 
 class GasPhotoSensor(SensorEntity):
     _attr_should_poll=False
@@ -27,3 +31,41 @@ class GasPhotoSensor(SensorEntity):
 
     async def async_added_to_hass(self):
         self.async_on_remove(async_dispatcher_connect(self.hass,DOMAIN+'_updated',self.async_write_ha_state))
+
+
+class GasPhotoPublicationStatusSensor(SensorEntity):
+    """Sensor tracking the committed publication status and daily coverage snapshot."""
+    _attr_should_poll = False
+
+    def __init__(self, hass):
+        self.hass = hass
+        self._attr_unique_id = 'gas_photo_publication_status'
+        self._attr_name = 'Gas photo publication status'
+        self.entity_id = 'sensor.gas_photo_publication_status'
+
+    @property
+    def native_value(self):
+        receiver = self.hass.data.get(DOMAIN)
+        if not receiver:
+            return "unknown"
+        data = receiver.ledger.data
+        if data.get('rebuild_in_progress'):
+            return "rebuilding"
+        if data.get('pending'):
+            return "pending"
+        return "synchronized"
+
+    @property
+    def extra_state_attributes(self):
+        receiver = self.hass.data.get(DOMAIN)
+        if not receiver:
+            return {}
+        data = receiver.ledger.data
+        return {
+            "published_revision_id": data.get("published_revision_id", 0),
+            "published_daily_coverage": data.get("published_daily_coverage", {}),
+        }
+
+    async def async_added_to_hass(self):
+        self.async_on_remove(async_dispatcher_connect(self.hass, DOMAIN + '_updated', self.async_write_ha_state))
+        self.async_on_remove(async_dispatcher_connect(self.hass, DOMAIN + '_published', self.async_write_ha_state))

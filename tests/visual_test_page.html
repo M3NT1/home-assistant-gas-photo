@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <title>Gas Photo Frontend Visual Audit & Test Page</title>
+  <!-- ApexCharts CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #111827;
+      color: #f3f4f6;
+      padding: 24px;
+      margin: 0;
+    }
+    h1, h2 {
+      color: #60a5fa;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+    .card-box {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    }
+    ha-card {
+      display: block;
+      background: #1f2937;
+      color: #f3f4f6;
+    }
+    button {
+      background: #374151;
+      color: #f3f4f6;
+      border: 1px solid #4b5563;
+      padding: 6px 16px;
+      margin-right: 8px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+    th {
+      border-bottom: 2px solid #4b5563;
+      padding: 8px;
+    }
+    td {
+      border-bottom: 1px solid #374151;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Gas Photo Frontend Level 3 Vizuális Audit</h1>
+    
+    <!-- 1. Real custom element: gas-photo-card -->
+    <div class="card-box">
+      <h2>1. GasPhotoCard (custom_components/gas_photo/static/gas-photo-card.js)</h2>
+      <div id="card-mount"></div>
+    </div>
+
+    <!-- 2. Real ApexCharts Card with Section 3.1 Data Generators -->
+    <div class="card-box">
+      <h2>2. ApexCharts Napi Profil Grafikon (Kék: Lezárt becslés #1e88e5, Narancs: Részleges #ffa726)</h2>
+      <div id="chart"></div>
+    </div>
+  </div>
+
+  <!-- Load actual gas-photo-card.js -->
+  <script src="../custom_components/gas_photo/static/gas-photo-card.js"></script>
+
+  <script>
+    // 1. Initialize GasPhotoCard with mock hass
+    const mockHass = {
+      callWS: async (msg) => {
+        if (msg.type === 'gas_photo/get_readings') {
+          return {
+            readings: [
+              { id: '1', captured_at: '2026-09-01T08:00:00+00:00', value: '1000.000' },
+              { id: '2', captured_at: '2026-09-01T12:00:00+00:00', value: '1000.500' },
+              { id: '3', captured_at: '2026-09-01T16:00:00+00:00', value: '1001.200' },
+              { id: '4', captured_at: '2026-09-02T08:00:00+00:00', value: '1002.500' },
+            ]
+          };
+        }
+        if (msg.type === 'recorder/statistics_during_period') {
+          return {
+            'gas_photo:gas_estimated': [
+              { start: '2026-10-04T22:00:00.000Z', change: 0.850 }, // 2026-10-05 local (PARTIAL)
+              { start: '2026-10-05T22:00:00.000Z', change: 1.250 }, // 2026-10-06 local (CLOSED)
+              { start: '2026-10-06T22:00:00.000Z', change: 1.200 }, // 2026-10-07 local (CLOSED)
+              { start: '2026-10-07T22:00:00.000Z', change: 0.400 }, // 2026-10-08 local (PARTIAL)
+              { start: '2026-10-08T22:00:00.000Z', change: 0.000 }, // 2026-10-09 local (OPEN)
+            ]
+          };
+        }
+      }
+    };
+
+    const mockEntity = {
+      attributes: {
+        published_revision_id: 2,
+        published_daily_coverage: {
+          '2026-10-05': 'PARTIAL',
+          '2026-10-06': 'CLOSED',
+          '2026-10-07': 'CLOSED',
+          '2026-10-08': 'PARTIAL',
+          '2026-10-09': 'OPEN',
+        }
+      }
+    };
+
+    // Instantiate card element
+    const cardEl = document.createElement('gas-photo-card');
+    cardEl.setConfig({ title: 'Pontos gázóra-leolvasások (Audit)' });
+    document.getElementById('card-mount').appendChild(cardEl);
+    cardEl.hass = mockHass;
+
+    // 2. Render ApexCharts using the exact data generator output
+    async function initChart() {
+      const coverageMap = mockEntity.attributes.published_daily_coverage || {};
+      const res = await mockHass.callWS({
+        type: 'recorder/statistics_during_period',
+        statistic_ids: ['gas_photo:gas_estimated'],
+        period: 'day',
+        types: ['change'],
+        start_time: '2026-10-01T00:00:00.000Z',
+        end_time: '2026-10-10T00:00:00.000Z',
+      });
+      const stats = res['gas_photo:gas_estimated'] || [];
+
+      // CLOSED series (#1e88e5)
+      const closedData = stats.map(entry => {
+        const dStr = new Date(entry.start).toLocaleDateString('en-CA', { timeZone: 'Europe/Budapest' });
+        const isClosed = coverageMap[dStr] === 'CLOSED';
+        const val = (isClosed && entry.change !== null && entry.change !== undefined) ? Number(entry.change) : null;
+        return { x: dStr, y: val };
+      });
+
+      // PARTIAL series (#ffa726)
+      const partialData = stats.map(entry => {
+        const dStr = new Date(entry.start).toLocaleDateString('en-CA', { timeZone: 'Europe/Budapest' });
+        const isPartial = coverageMap[dStr] === 'PARTIAL';
+        const val = (isPartial && entry.change !== null && entry.change !== undefined) ? Number(entry.change) : null;
+        return { x: dStr, y: val };
+      });
+
+      const options = {
+        series: [
+          { name: 'Napi fogyasztás (Lezárt becslés)', data: closedData },
+          { name: 'Részleges fogyasztás (Nyitott nap)', data: partialData }
+        ],
+        chart: {
+          type: 'bar',
+          height: 320,
+          background: '#1f2937',
+          stacked: true,
+          toolbar: { show: false }
+        },
+        colors: ['#1e88e5', '#ffa726'],
+        theme: { mode: 'dark' },
+        plotOptions: {
+          bar: {
+            horizontal: false,
+            columnWidth: '50%',
+            borderRadius: 4,
+          },
+        },
+        dataLabels: { enabled: false },
+        xaxis: {
+          type: 'category',
+          labels: { style: { colors: '#9ca3af' } }
+        },
+        yaxis: {
+          title: { text: 'm³', style: { color: '#9ca3af' } },
+          labels: { style: { colors: '#9ca3af' } }
+        },
+        legend: {
+          position: 'top',
+          labels: { colors: '#f3f4f6' }
+        },
+        grid: {
+          borderColor: '#374151'
+        }
+      };
+
+      const chart = new ApexCharts(document.querySelector("#chart"), options);
+      chart.render();
+      window.__auditReady = true;
+    }
+
+    initChart();
+  </script>
+</body>
+</html>

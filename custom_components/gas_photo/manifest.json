@@ -1,7 +1,7 @@
 {
   "domain": "gas_photo",
   "name": "Gas Photo",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "documentation": "https://github.com/M3NT1/home-assistant-gas-photo",
   "issue_tracker": "https://github.com/M3NT1/home-assistant-gas-photo/issues",
   "codeowners": ["@M3NT1"],
