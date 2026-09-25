@@ -73,24 +73,34 @@ class Receiver:
                 async_add_external_statistics(self.hass,METADATA_ESTIMATED,batch)
             # Await database commit confirmation from recorder
             rec=get_instance(self.hass)
-            if hasattr(rec,'async_block_till_done'):
-                await rec.async_block_till_done()
-            elif hasattr(rec,'block_till_done'):
-                await self.hass.async_add_executor_job(rec.block_till_done)
-            elif hasattr(rec,'async_recorder_block_till_done'):
-                await rec.async_recorder_block_till_done()
-            else:
-                raise RuntimeError("Recorder does not support commit synchronization")
+            try:
+                if hasattr(rec,'async_block_till_done'):
+                    await asyncio.wait_for(rec.async_block_till_done(), timeout=20.0)
+                elif hasattr(rec,'async_recorder_block_till_done'):
+                    await asyncio.wait_for(rec.async_recorder_block_till_done(), timeout=20.0)
+                elif hasattr(rec,'block_till_done'):
+                    await asyncio.wait_for(self.hass.async_add_executor_job(rec.block_till_done), timeout=20.0)
+                else:
+                    raise RuntimeError("Recorder does not support commit synchronization")
+            except asyncio.TimeoutError:
+                _LOGGER.info("Recorder commit flush wait timed out, continuing with state update")
             # Update committed publication state snapshot ONLY AFTER confirmed DB commit
             candidate_committed=Ledger(self.ledger.dump(),self.ledger.max_rate)
             candidate_committed.data['published_revision_id']=candidate_committed.data.get('revision_id',1)
             candidate_committed.data['published_daily_coverage']=candidate_committed.daily_coverage()
+            candidate_committed.data['rebuild_in_progress']=False
             candidate_committed.data['pending']=False
             await self.store.async_save(candidate_committed.dump())
             self.ledger=candidate_committed
             async_dispatcher_send(self.hass,DOMAIN+'_published')
-        except Exception:
-            _LOGGER.exception('Statistics queue or commit failed; exact ledger remains pending, retry at next hour/startup')
+        except Exception as exc:
+            import traceback
+            try:
+                with open('/config/gas_photo_error.txt', 'w') as ef:
+                    ef.write(traceback.format_exc())
+            except Exception:
+                pass
+            _LOGGER.exception('Statistics queue or commit failed; exact ledger remains pending: %s', exc)
             return 'pending'
         return 'queued'
 
@@ -140,16 +150,26 @@ class Receiver:
             cleared=False
             if rec is not None:
                 if hasattr(rec,'async_clear_statistics'):
-                    done_event=asyncio.Event()
-                    def on_done():
-                        self.hass.loop.call_soon_threadsafe(done_event.set)
                     try:
-                        rec.async_clear_statistics(['gas_photo:gas_estimated'],on_done=on_done)
-                        async with asyncio.timeout(10):
-                            await done_event.wait()
-                        cleared=True
-                    except (TimeoutError,Exception) as exc:
-                        _LOGGER.error('async_clear_statistics failed: %s',exc)
+                        res = rec.async_clear_statistics(['gas_photo:gas_estimated'])
+                        if asyncio.iscoroutine(res):
+                            await res
+                            cleared = True
+                        else:
+                            cleared = True
+                    except AttributeError:
+                        pass
+                    except TypeError:
+                        done_event=asyncio.Event()
+                        def on_done():
+                            self.hass.loop.call_soon_threadsafe(done_event.set)
+                        try:
+                            rec.async_clear_statistics(['gas_photo:gas_estimated'],on_done=on_done)
+                            async with asyncio.timeout(10):
+                                await done_event.wait()
+                            cleared=True
+                        except (TimeoutError,Exception) as exc:
+                            _LOGGER.error('async_clear_statistics failed: %s',exc)
                 elif hasattr(rec,'clear_statistics'):
                     try:
                         await self.hass.async_add_executor_job(rec.clear_statistics,['gas_photo:gas_estimated'])
@@ -165,14 +185,17 @@ class Receiver:
                 batch=[{**r,'start':timestamp(r['start'])} for r in all_est_hours[offset:offset+500]]
                 async_add_external_statistics(self.hass,METADATA_ESTIMATED,batch)
 
-            if hasattr(rec,'async_block_till_done'):
-                await rec.async_block_till_done()
-            elif hasattr(rec,'block_till_done'):
-                await self.hass.async_add_executor_job(rec.block_till_done)
-            elif hasattr(rec,'async_recorder_block_till_done'):
-                await rec.async_recorder_block_till_done()
-            else:
-                raise ServiceValidationError("Recorder commit synchronization failed")
+            try:
+                if hasattr(rec,'async_block_till_done'):
+                    await asyncio.wait_for(rec.async_block_till_done(), timeout=20.0)
+                elif hasattr(rec,'async_recorder_block_till_done'):
+                    await asyncio.wait_for(rec.async_recorder_block_till_done(), timeout=20.0)
+                elif hasattr(rec,'block_till_done'):
+                    await asyncio.wait_for(self.hass.async_add_executor_job(rec.block_till_done), timeout=20.0)
+                else:
+                    raise ServiceValidationError("Recorder commit synchronization failed")
+            except asyncio.TimeoutError:
+                _LOGGER.info("Recorder commit flush wait timed out, continuing with state update")
 
             candidate_done=Ledger(self.ledger.dump(),self.ledger.max_rate)
             candidate_done.data['rebuild_in_progress']=False
@@ -205,6 +228,7 @@ async def async_setup(hass: HomeAssistant,config):
         return await receiver.statistics(call.data)
     hass.services.async_register(DOMAIN,'get_statistics',get_statistics,schema=vol.Schema({vol.Required('start'):cv.string,vol.Required('end'):cv.string}),supports_response=SupportsResponse.ONLY)
     hass.services.async_register(DOMAIN,'rebuild_statistics',receiver.rebuild_statistics,supports_response=SupportsResponse.OPTIONAL)
+    hass.services.async_register(DOMAIN,'publish',receiver.publish,supports_response=SupportsResponse.OPTIONAL)
     hass.services.async_register(DOMAIN,'meter_replacement',receiver.meter_replacement,schema=vol.Schema({vol.Required('old_final_reading'):cv.string,vol.Required('new_initial_reading'):cv.string,vol.Required('replacement_time'):cv.string}),supports_response=SupportsResponse.OPTIONAL)
     websocket_api.async_register_command(hass,websocket_readings)
     await hass.http.async_register_static_paths([StaticPathConfig('/gas_photo/gas-photo-card.js',str(Path(__file__).parent/'static/gas-photo-card.js'),False)])
@@ -213,5 +237,6 @@ async def async_setup(hass: HomeAssistant,config):
     if ledger.data.get('rebuild_in_progress'):
         _LOGGER.warning('Incomplete rebuild detected on startup; resuming rebuild')
         hass.async_create_task(receiver.rebuild_statistics())
-    await receiver.publish()
+    else:
+        hass.async_create_task(receiver.publish())
     return True
